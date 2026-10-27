@@ -261,7 +261,10 @@ internal class LocalRuntimeManager(private val context: Context) {
     private fun extractRootfs(archive: File, destination: File, onProgress: (Int) -> Unit) {
         destination.mkdirs()
         TarArchiveInputStream(XZInputStream(BufferedInputStream(FileInputStream(archive)))).use {
-            extractTar(it, destination, stripSegments = 0) { count ->
+            // Termux's archive contains ubuntu-noble-<abi>/ as its first
+            // directory. The proot root must contain bin/, usr/, and etc/
+            // directly, rather than that archive wrapper directory.
+            extractTar(it, destination, stripSegments = 1) { count ->
                 if (count % 500L == 0L) onProgress((count % 10_000L).toInt() / 100)
             }
         }
@@ -293,8 +296,13 @@ internal class LocalRuntimeManager(private val context: Context) {
     ) {
         var entry = input.nextTarEntry
         var count = 0L
+        var archivePrefix: List<String>? = null
         while (entry != null) {
-            val parts = entry.name.split('/').filter { it.isNotEmpty() }
+            val rawParts = entry.name.split('/').filter { it.isNotEmpty() }
+            if (archivePrefix == null && stripSegments > 0) {
+                archivePrefix = rawParts.take(stripSegments)
+            }
+            val parts = rawParts
             val relativeName = parts.drop(stripSegments).joinToString(File.separator)
             if (relativeName.isNotEmpty()) {
                 val target = File(destination, relativeName).canonicalFile
@@ -309,7 +317,13 @@ internal class LocalRuntimeManager(private val context: Context) {
                     Files.createSymbolicLink(target.toPath(), java.nio.file.Paths.get(entry.linkName))
                 } else if (entry.isLink) {
                     target.parentFile?.mkdirs()
-                    val linkTarget = File(destination, entry.linkName).canonicalFile
+                    val linkParts = entry.linkName.split('/').filter { it.isNotEmpty() }
+                    val relativeLink = if (archivePrefix != null && linkParts.take(archivePrefix!!.size) == archivePrefix) {
+                        linkParts.drop(archivePrefix!!.size).joinToString(File.separator)
+                    } else {
+                        entry.linkName
+                    }
+                    val linkTarget = File(destination, relativeLink).canonicalFile
                     if (linkTarget.exists()) {
                         runCatching { Files.deleteIfExists(target.toPath()) }
                         Files.createLink(target.toPath(), linkTarget.toPath())
