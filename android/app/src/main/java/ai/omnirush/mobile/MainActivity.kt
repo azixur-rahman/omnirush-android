@@ -205,7 +205,7 @@ private fun OmniRushApp() {
                 val response = activeClient.prompt(activeSession, prompt)
                 val assistantText = response?.text.orEmpty()
                 if (assistantText.isNotBlank()) {
-                    messages += ChatMessage(response.id, MessageRole.Assistant, assistantText)
+                    messages += ChatMessage(response?.id ?: UUID.randomUUID().toString(), MessageRole.Assistant, assistantText)
                 } else {
                     val freshMessages = activeClient.messages(activeSession)
                     messages.clear()
