@@ -1,6 +1,8 @@
 package ai.omnirush.mobile
 
+import android.content.Intent
 import android.os.Bundle
+import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -139,6 +141,11 @@ private sealed interface ConnectionState {
 @Composable
 private fun OmniRushApp() {
     val context = LocalContext.current
+    var localMode by rememberSaveable { mutableStateOf(true) }
+    if (localMode) {
+        LocalRuntimeApp()
+        return
+    }
     val preferences = remember {
         context.getSharedPreferences("omnirush-mobile", android.content.Context.MODE_PRIVATE)
     }
@@ -251,6 +258,282 @@ private fun OmniRushApp() {
         }
     }
 }
+
+@Composable
+private fun LocalRuntimeApp() {
+    val context = LocalContext.current
+    val manager = remember { LocalRuntimeManager(context) }
+    val scope = rememberCoroutineScope()
+    var state by remember {
+        mutableStateOf<LocalRuntimeState>(
+            when {
+                manager.hasOmniRush() -> LocalRuntimeState.OmniRushReady
+                manager.hasUbuntu() -> LocalRuntimeState.UbuntuReady
+                else -> LocalRuntimeState.Empty
+            },
+        )
+    }
+    var output by remember { mutableStateOf("") }
+    var loginUrl by remember { mutableStateOf<String?>(null) }
+    val messages = remember { mutableStateListOf<ChatMessage>() }
+    var draft by rememberSaveable { mutableStateOf("") }
+    var isThinking by rememberSaveable { mutableStateOf(false) }
+    val keyboard = LocalSoftwareKeyboardController.current
+
+    fun appendOutput(line: String) {
+        output = (output + line + "\n").takeLast(4_000)
+    }
+
+    fun prepareRuntime() {
+        scope.launch {
+            try {
+                state = LocalRuntimeState.Downloading("Preparing Ubuntu runtime", 0)
+                manager.prepare { label, progress -> state = LocalRuntimeState.Downloading(label, progress) }
+                state = if (manager.hasOmniRush()) LocalRuntimeState.OmniRushReady else LocalRuntimeState.UbuntuReady
+            } catch (error: Exception) {
+                state = LocalRuntimeState.Failed(error.message ?: "The Linux runtime could not be prepared.")
+            }
+        }
+    }
+
+    fun installOmniRush() {
+        scope.launch {
+            try {
+                output = "Installing Node.js and the published OmniRush CLI…\n"
+                state = LocalRuntimeState.Downloading("Installing OmniRush", -1)
+                val result = manager.installOmniRush(::appendOutput)
+                state = if (result.exitCode == 0) {
+                    LocalRuntimeState.OmniRushReady
+                } else {
+                    LocalRuntimeState.Failed("OmniRush installation failed with exit code ${result.exitCode}.")
+                }
+            } catch (error: Exception) {
+                state = LocalRuntimeState.Failed(error.message ?: "OmniRush installation failed.")
+            }
+        }
+    }
+
+    fun login() {
+        scope.launch {
+            try {
+                output = "Starting real OmniRush login…\n"
+                state = LocalRuntimeState.Downloading("Waiting for OmniRush login", -1)
+                val result = manager.login(::appendOutput)
+                loginUrl = result.loginUrl
+                state = if (result.exitCode == 0) {
+                    LocalRuntimeState.Ready
+                } else {
+                    LocalRuntimeState.LoginRequired(result.loginUrl)
+                }
+            } catch (error: Exception) {
+                state = LocalRuntimeState.Failed(error.message ?: "OmniRush login failed.")
+            }
+        }
+    }
+
+    fun sendLocalPrompt(value: String) {
+        val prompt = value.trim()
+        if (prompt.isEmpty() || isThinking || !manager.hasOmniRush()) return
+        messages += ChatMessage(UUID.randomUUID().toString(), MessageRole.User, prompt)
+        draft = ""
+        keyboard?.hide()
+        isThinking = true
+        scope.launch {
+            try {
+                val result = manager.runPrompt(prompt, ::appendOutput)
+                val answer = cleanCliOutput(result.output)
+                if (result.exitCode == 0 && answer.isNotBlank()) {
+                    messages += ChatMessage(UUID.randomUUID().toString(), MessageRole.Assistant, answer)
+                } else {
+                    messages += ChatMessage(
+                        UUID.randomUUID().toString(),
+                        MessageRole.Assistant,
+                        "OmniRush returned exit code ${result.exitCode}.\n\n$answer",
+                    )
+                }
+            } catch (error: Exception) {
+                messages += ChatMessage(
+                    UUID.randomUUID().toString(),
+                    MessageRole.Assistant,
+                    "The local OmniRush runtime failed. ${error.message ?: "Try the runtime setup again."}",
+                )
+            } finally {
+                isThinking = false
+            }
+        }
+    }
+
+    if (state is LocalRuntimeState.Ready) {
+        LocalChatScreen(
+            messages = messages,
+            draft = draft,
+            isThinking = isThinking,
+            onDraftChange = { draft = it },
+            onSend = { sendLocalPrompt(draft) },
+            onPrompt = ::sendLocalPrompt,
+            onDisconnect = { state = LocalRuntimeState.OmniRushReady },
+        )
+    } else {
+        LocalRuntimeSetupScreen(
+            state = state,
+            output = output,
+            loginUrl = loginUrl,
+            onPrepare = ::prepareRuntime,
+            onInstall = ::installOmniRush,
+            onLogin = ::login,
+            onOpenLogin = { url ->
+                if (url != null) context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            },
+        )
+    }
+}
+
+@Composable
+private fun LocalRuntimeSetupScreen(
+    state: LocalRuntimeState,
+    output: String,
+    loginUrl: String?,
+    onPrepare: () -> Unit,
+    onInstall: () -> Unit,
+    onLogin: () -> Unit,
+    onOpenLogin: (String?) -> Unit,
+) {
+    val busy = state is LocalRuntimeState.Downloading
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Canvas)
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .padding(horizontal = 22.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Spacer(Modifier.height(34.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = Accent, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("OmniRush on Android", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+        }
+
+        Column(
+            modifier = Modifier.fillMaxSize().weight(1f),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(
+                modifier = Modifier.size(82.dp).background(
+                    Brush.radialGradient(listOf(Accent.copy(alpha = 0.72f), AccentDeep.copy(alpha = 0.24f))),
+                    CircleShape,
+                ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Outlined.AutoAwesome, contentDescription = "OmniRush", tint = Ink, modifier = Modifier.size(38.dp))
+            }
+            Spacer(Modifier.height(22.dp))
+            Text("Run the real OmniRush CLI locally", color = Ink, fontSize = 24.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.55).sp, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(9.dp))
+            Text(
+                "The APK installs a rootless Ubuntu userland with PRoot, then installs the published OmniRush CLI. Your prompts run inside that local runtime.",
+                color = MutedInk,
+                fontSize = 14.sp,
+                lineHeight = 21.sp,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(24.dp))
+
+            when (state) {
+                LocalRuntimeState.Empty -> SetupAction("1  Install Ubuntu runtime", "Downloads and verifies the official Termux Ubuntu rootfs.", onPrepare)
+                LocalRuntimeState.UbuntuReady -> SetupAction("2  Install OmniRush", "Installs Node.js, npm, and omnirush@latest inside Ubuntu.", onInstall)
+                LocalRuntimeState.OmniRushReady -> SetupAction("3  Sign in to OmniRush", "Opens the real OmniRush account login flow.", onLogin)
+                is LocalRuntimeState.LoginRequired -> {
+                    SetupAction("Continue login", "Finish signing in, then return to this app.", onLogin)
+                    if (loginUrl != null) {
+                        Spacer(Modifier.height(9.dp))
+                        Button(
+                            onClick = { onOpenLogin(loginUrl) },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
+                            shape = RoundedCornerShape(18.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = GlassLight, contentColor = Ink),
+                        ) { Text("Open OmniRush login in browser") }
+                    }
+                }
+                is LocalRuntimeState.Failed -> {
+                    GlassSurface(Modifier.fillMaxWidth(), Color(0xFF3B2024).copy(alpha = 0.82f), RoundedCornerShape(16.dp)) {
+                        Text(state.message, color = ErrorInk, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(14.dp))
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    SetupAction("Retry setup", "Try the failed runtime step again.", if (!hasLocalUbuntuHint(output)) onPrepare else onInstall)
+                }
+                is LocalRuntimeState.Downloading -> {
+                    GlassSurface(Modifier.fillMaxWidth(), Glass, RoundedCornerShape(18.dp)) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(state.label, color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Spacer(Modifier.height(8.dp))
+                            Text(if (state.progress >= 0) "${state.progress}%" else "This may take a few minutes…", color = Accent, fontSize = 13.sp)
+                        }
+                    }
+                }
+                LocalRuntimeState.Ready -> Unit
+            }
+
+            if (output.isNotBlank() && !busy) {
+                Spacer(Modifier.height(14.dp))
+                GlassSurface(Modifier.fillMaxWidth(), Glass, RoundedCornerShape(16.dp)) {
+                    Text(output.takeLast(1_600), color = MutedInk, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(13.dp))
+                }
+            }
+        }
+
+        Text(
+            "First setup downloads a large Linux runtime. Keep the app open and use Wi-Fi if possible.",
+            color = MutedInk.copy(alpha = 0.72f),
+            fontSize = 11.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(bottom = 18.dp),
+        )
+    }
+}
+
+@Composable
+private fun SetupAction(title: String, subtitle: String, onClick: () -> Unit) {
+    GlassSurface(Modifier.fillMaxWidth().clickable(onClick = onClick), Glass, RoundedCornerShape(18.dp)) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+            Text(title, color = Ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(4.dp))
+            Text(subtitle, color = MutedInk, fontSize = 12.sp, lineHeight = 17.sp)
+        }
+    }
+}
+
+@Composable
+private fun LocalChatScreen(
+    messages: List<ChatMessage>,
+    draft: String,
+    isThinking: Boolean,
+    onDraftChange: (String) -> Unit,
+    onSend: () -> Unit,
+    onPrompt: (String) -> Unit,
+    onDisconnect: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().background(Canvas).windowInsetsPadding(WindowInsets.safeDrawing),
+    ) {
+        ChatTopBar(modelLabel = "GPT-6 Astra  •  Local OmniRush", onDisconnect = onDisconnect)
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (messages.isEmpty()) WelcomeContent(onPrompt) else Conversation(messages, isThinking)
+        }
+        Composer(draft, !isThinking, onDraftChange, onSend)
+    }
+}
+
+private fun cleanCliOutput(value: String): String {
+    return Regex("\\u001B\\[[;\\d]*[ -/]*[@-~]")
+        .replace(value, "")
+        .replace("\r", "")
+        .trim()
+}
+
+private fun hasLocalUbuntuHint(output: String): Boolean =
+    output.contains("OmniRush", ignoreCase = true) || output.contains("node", ignoreCase = true)
 
 @Composable
 private fun ConnectionScreen(

@@ -22,12 +22,10 @@ The APK is written to
 `android/` and also supports **Run workflow**. Pushing a tag matching
 `android-v*` attaches the APK to a GitHub release.
 
-The mobile surface connects to a real OpenCode-compatible server. Enter the
-server URL and bearer token on the first screen, then the app calls `/api/info`,
-creates a real session at `/api/session`, and sends prompts to
-`/api/session/{id}/prompt`. Assistant text comes from the server response; the
-APK contains no demo responder or hardcoded AI answer.
+The default mobile surface runs the real OmniRush CLI locally. On first launch,
+the app downloads Ubuntu rootfs and PRoot, verifies the rootfs checksum, installs Node.js 22 and
+`omnirush@latest` inside Ubuntu, starts `omnirush login` in that runtime, and
+then executes real `omnirush -p` prompts from the native chat UI.
 
-For an emulator, a local server at `localhost:4096` is reached with
-`http://10.0.2.2:4096`. For a physical phone, run the server on a reachable
-LAN address and use that address in the app. Use HTTPS for production servers.
+The earlier remote OpenCode API adapter is retained in the source for servers
+that you prefer to run elsewhere. Use HTTPS for production remote servers.

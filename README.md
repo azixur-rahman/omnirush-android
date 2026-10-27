@@ -25,7 +25,12 @@ The requested UI/UX references are installed under `.opencode/skills/`:
 - Animate
 - Mobile Native
 
-The mobile surface is a real OpenCode-compatible client: it verifies the server,
-creates a session, sends prompts, and renders assistant parts returned by the
-server. Enter the server URL and bearer token in the APK. It does not ship a
-fake responder or hardcoded AI answer.
+The APK now has an on-device mode. On first launch it downloads a PRoot binary
+plus a verified Termux Ubuntu rootfs, installs Node.js 22 and the published
+OmniRush CLI inside that rootfs, opens the real `omnirush login` flow, and runs
+real `omnirush -p` prompts from the glass chat UI. It does not ship a fake
+responder or hardcoded AI answer.
+
+The remote OpenCode-compatible connection remains in the source as a fallback
+adapter. The default experience is the local Linux runtime requested for
+Android; the first install needs a large download and network access.
