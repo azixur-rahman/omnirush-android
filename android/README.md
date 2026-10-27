@@ -1,9 +1,9 @@
 # OmniRush Android
 
-This directory contains the first Android surface for OmniRush, built with
-Jetpack Compose. It uses a dark, translucent material system inspired by Apple
-Liquid Glass: layered surfaces, restrained color, thumb-friendly controls, and
-short interruptible press/entry motion.
+This directory contains the Android client for OmniRush, built with Jetpack
+Compose. It uses a dark, translucent material system inspired by Apple Liquid
+Glass: layered surfaces, restrained color, thumb-friendly controls, and short
+interruptible press/entry motion.
 
 ## Build locally
 
@@ -22,7 +22,12 @@ The APK is written to
 `android/` and also supports **Run workflow**. Pushing a tag matching
 `android-v*` attaches the APK to a GitHub release.
 
-The current mobile surface includes the complete chat interaction and a local
-preview responder so the UI can be exercised without credentials. The existing
-desktop/server session transport can be connected in the next adapter layer
-without changing the Compose presentation.
+The mobile surface connects to a real OpenCode-compatible server. Enter the
+server URL and bearer token on the first screen, then the app calls `/api/info`,
+creates a real session at `/api/session`, and sends prompts to
+`/api/session/{id}/prompt`. Assistant text comes from the server response; the
+APK contains no demo responder or hardcoded AI answer.
+
+For an emulator, a local server at `localhost:4096` is reached with
+`http://10.0.2.2:4096`. For a physical phone, run the server on a reachable
+LAN address and use that address in the app. Use HTTPS for production servers.

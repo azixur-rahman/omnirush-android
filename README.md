@@ -25,6 +25,7 @@ The requested UI/UX references are installed under `.opencode/skills/`:
 - Animate
 - Mobile Native
 
-The first mobile surface uses a local preview responder so the chat flow can be
-tested without credentials. The existing OmniRush transport can be connected
-behind the same Compose presentation in a later adapter.
+The mobile surface is a real OpenCode-compatible client: it verifies the server,
+creates a session, sends prompts, and renders assistant parts returned by the
+server. Enter the server URL and bearer token in the APK. It does not ship a
+fake responder or hardcoded AI answer.

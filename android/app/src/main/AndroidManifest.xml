@@ -8,6 +8,7 @@
         android:label="OmniRush"
         android:roundIcon="@drawable/ic_launcher"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.OmniRush">
         <activity
             android:name=".MainActivity"
