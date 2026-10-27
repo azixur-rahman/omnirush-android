@@ -30,7 +30,7 @@ FILES = {
     "ubuntu-rootfs-x64.tar.xz": (
         "https://github.com/termux/proot-distro/releases/download/v4.18.0/ubuntu-noble-x86_64-pd-v4.18.0.tar.xz",
         "sha256",
-        "3a769bce23905effb504140d43b6ddd73dac9e261d1932894afa31de81e45414",
+        "3a769bce23985effb504140d43b6ddd73dac9e261d1932894afa31de81e45414",
     ),
     "node-arm64.tar.xz": (
         "https://nodejs.org/dist/v22.19.0/node-v22.19.0-linux-arm64.tar.xz",
