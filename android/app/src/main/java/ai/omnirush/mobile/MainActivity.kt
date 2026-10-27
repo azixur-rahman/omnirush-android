@@ -318,12 +318,18 @@ private fun LocalRuntimeApp() {
             try {
                 output = "Starting real OmniRush login…\n"
                 state = LocalRuntimeState.Downloading("Waiting for OmniRush login", -1)
-                val result = manager.login(::appendOutput)
+                val result = manager.login { line ->
+                    appendOutput(line)
+                    extractLoginUrl(line)?.let { url ->
+                        loginUrl = url
+                        state = LocalRuntimeState.LoginRequired(url)
+                    }
+                }
                 loginUrl = result.loginUrl
                 state = if (result.exitCode == 0) {
                     LocalRuntimeState.Ready
                 } else {
-                    LocalRuntimeState.LoginRequired(result.loginUrl)
+                    LocalRuntimeState.Failed("OmniRush login stopped with exit code ${result.exitCode}. Open the login link and try again.")
                 }
             } catch (error: Exception) {
                 state = LocalRuntimeState.Failed(error.message ?: "OmniRush login failed.")
@@ -381,6 +387,11 @@ private fun LocalRuntimeApp() {
             onPrepare = ::prepareRuntime,
             onInstall = ::installOmniRush,
             onLogin = ::login,
+            onRetry = when {
+                manager.hasOmniRush() -> ::login
+                manager.hasUbuntu() -> ::installOmniRush
+                else -> ::prepareRuntime
+            },
             onOpenLogin = { url ->
                 if (url != null) context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
             },
@@ -396,6 +407,7 @@ private fun LocalRuntimeSetupScreen(
     onPrepare: () -> Unit,
     onInstall: () -> Unit,
     onLogin: () -> Unit,
+    onRetry: () -> Unit,
     onOpenLogin: (String?) -> Unit,
 ) {
     val busy = state is LocalRuntimeState.Downloading
@@ -445,7 +457,7 @@ private fun LocalRuntimeSetupScreen(
                 LocalRuntimeState.UbuntuReady -> SetupAction("2  Install OmniRush", "Unpacks Node.js and the published OmniRush CLI already bundled in this APK.", onInstall)
                 LocalRuntimeState.OmniRushReady -> SetupAction("3  Sign in to OmniRush", "Opens the real OmniRush account login flow.", onLogin)
                 is LocalRuntimeState.LoginRequired -> {
-                    SetupAction("Continue login", "Finish signing in, then return to this app.", onLogin)
+                    Text("Approve the sign-in request in your browser, then return here.", color = MutedInk, fontSize = 13.sp, textAlign = TextAlign.Center)
                     if (loginUrl != null) {
                         Spacer(Modifier.height(9.dp))
                         Button(
@@ -461,7 +473,7 @@ private fun LocalRuntimeSetupScreen(
                         Text(state.message, color = ErrorInk, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(14.dp))
                     }
                     Spacer(Modifier.height(12.dp))
-                    SetupAction("Retry setup", "Try the failed runtime step again.", if (!hasLocalUbuntuHint(output)) onPrepare else onInstall)
+                    SetupAction("Retry", "Try the failed step again.", onRetry)
                 }
                 is LocalRuntimeState.Downloading -> {
                     GlassSurface(Modifier.fillMaxWidth(), Glass, RoundedCornerShape(18.dp)) {
@@ -532,8 +544,11 @@ private fun cleanCliOutput(value: String): String {
         .trim()
 }
 
-private fun hasLocalUbuntuHint(output: String): Boolean =
-    output.contains("OmniRush", ignoreCase = true) || output.contains("node", ignoreCase = true)
+private fun extractLoginUrl(value: String): String? =
+    Regex("https?://[^\\s)]+")
+        .find(value)
+        ?.value
+        ?.trimEnd('.', ',', ';')
 
 @Composable
 private fun ConnectionScreen(

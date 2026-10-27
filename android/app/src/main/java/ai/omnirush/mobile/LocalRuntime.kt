@@ -53,6 +53,7 @@ internal class LocalRuntimeManager(private val context: Context) {
     private val prootFile = File(runtimeDir, "proot")
     private val tempDir = File(runtimeDir, "tmp")
     private val workspaceDir = File(context.filesDir, "workspace")
+    private val ubuntuMarker = File(rootfsDir, "root/.omnirush/android-ubuntu-ready")
     private val installedMarker = File(rootfsDir, "root/.omnirush/android-installed")
     private val browserScript = File(rootfsDir, "usr/local/bin/omnirush-android-browser")
     private val loginUrlFile = File(rootfsDir, "root/.omnirush/android-login-url")
@@ -63,7 +64,7 @@ internal class LocalRuntimeManager(private val context: Context) {
         workspaceDir.mkdirs()
     }
 
-    fun hasUbuntu(): Boolean = rootfsDir.resolve("bin/sh").exists() && prootFile.canExecute()
+    fun hasUbuntu(): Boolean = ubuntuMarker.exists() && rootfsDir.resolve("bin/sh").exists() && prootFile.canExecute()
 
     fun hasOmniRush(): Boolean = installedMarker.exists()
 
@@ -79,6 +80,9 @@ internal class LocalRuntimeManager(private val context: Context) {
         }
 
         if (!hasUbuntu()) {
+            // A previous interrupted extraction can leave /bin/sh behind. Do
+            // not treat that partial rootfs as usable on the next launch.
+            if (rootfsDir.exists()) rootfsDir.deleteRecursively()
             onProgress("Unpacking bundled Ubuntu", 0)
             copyAsset("runtime/ubuntu-rootfs-$abi.tar.xz", archiveFile)
             verifySha256(archiveFile, rootfsHash)
@@ -86,6 +90,7 @@ internal class LocalRuntimeManager(private val context: Context) {
             extractRootfs(archiveFile, rootfsDir) { onProgress("Extracting Ubuntu", it) }
             archiveFile.delete()
             configureRootfs()
+            check(hasUbuntu()) { "Ubuntu extraction finished but the runtime marker was not created." }
         }
     }
 
@@ -119,6 +124,12 @@ internal class LocalRuntimeManager(private val context: Context) {
                 xz = false,
             )
 
+            check(nodeDir.resolve("bin/node").exists()) { "Bundled Node.js was not unpacked correctly." }
+            check(omniDir.resolve("app/src/bin.js").exists()) { "Bundled OmniRush CLI was not unpacked correctly." }
+            check(omniDir.resolve("node_modules/@omnirush-ai/cli-linux-$abi/bin/bun").exists()) {
+                "Bundled OmniRush native runtime was not unpacked correctly."
+            }
+
             val launcher = rootfsDir.resolve("usr/local/bin/omnirush")
             launcher.parentFile?.mkdirs()
             launcher.writeText(
@@ -135,10 +146,16 @@ internal class LocalRuntimeManager(private val context: Context) {
     suspend fun login(onOutput: (String) -> Unit): LocalCommandResult {
         loginUrlFile.delete()
         browserScript.parentFile?.mkdirs()
-        browserScript.writeText(
-            "#!/bin/sh\nprintf '%s' \"$1\" > /root/.omnirush/android-login-url\nexit 0\n",
-        )
+        val browserHook = "#!/bin/sh\nprintf '%s' \"$1\" > /root/.omnirush/android-login-url\nexit 0\n"
+        browserScript.writeText(browserHook)
         browserScript.setExecutable(true, false)
+        // OmniRush uses xdg-open/sensible-browser on Linux. Override the
+        // opener inside the rootfs so the URL is captured even on Android.
+        rootfsDir.resolve("usr/local/bin/xdg-open").apply {
+            parentFile?.mkdirs()
+            writeText(browserHook)
+            setExecutable(true, false)
+        }
         val result = execute(listOf("omnirush", "login"), onOutput)
         return result.copy(loginUrl = loginUrlFile.takeIf { it.exists() }?.readText()?.trim()?.ifBlank { null })
     }
@@ -177,7 +194,7 @@ internal class LocalRuntimeManager(private val context: Context) {
                 "TERM=xterm-256color",
                 "LANG=C.UTF-8",
                 "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                "BROWSER=/usr/local/bin/omnirush-android-browser",
+                "BROWSER=/usr/local/bin/xdg-open",
                 "/bin/sh",
                 "-lc",
                 "exec \"$@\"",
@@ -211,6 +228,7 @@ internal class LocalRuntimeManager(private val context: Context) {
             writeText("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
         }
         rootfsDir.resolve("root/.omnirush").mkdirs()
+        ubuntuMarker.writeText("v4.18.0\n")
     }
 
     private fun runtimeAbi(): String = when {
