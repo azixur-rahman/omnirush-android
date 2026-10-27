@@ -441,8 +441,8 @@ private fun LocalRuntimeSetupScreen(
             Spacer(Modifier.height(24.dp))
 
             when (state) {
-                LocalRuntimeState.Empty -> SetupAction("1  Install Ubuntu runtime", "Downloads and verifies the official Termux Ubuntu rootfs.", onPrepare)
-                LocalRuntimeState.UbuntuReady -> SetupAction("2  Install OmniRush", "Installs Node.js, npm, and omnirush@latest inside Ubuntu.", onInstall)
+                LocalRuntimeState.Empty -> SetupAction("1  Prepare Ubuntu runtime", "Unpacks the Ubuntu and PRoot files already bundled in this APK.", onPrepare)
+                LocalRuntimeState.UbuntuReady -> SetupAction("2  Install OmniRush", "Unpacks Node.js and the published OmniRush CLI already bundled in this APK.", onInstall)
                 LocalRuntimeState.OmniRushReady -> SetupAction("3  Sign in to OmniRush", "Opens the real OmniRush account login flow.", onLogin)
                 is LocalRuntimeState.LoginRequired -> {
                     SetupAction("Continue login", "Finish signing in, then return to this app.", onLogin)
@@ -484,7 +484,7 @@ private fun LocalRuntimeSetupScreen(
         }
 
         Text(
-            "First setup downloads a large Linux runtime. Keep the app open and use Wi-Fi if possible.",
+            "This APK includes the Linux runtime, so first setup only unpacks files on the device.",
             color = MutedInk.copy(alpha = 0.72f),
             fontSize = 11.sp,
             textAlign = TextAlign.Center,

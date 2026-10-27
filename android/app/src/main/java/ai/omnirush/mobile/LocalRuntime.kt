@@ -10,8 +10,8 @@ import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
+import java.io.GZIPInputStream
+import java.io.InputStream
 import java.nio.file.Files
 import java.security.MessageDigest
 
@@ -34,24 +34,17 @@ internal data class LocalCommandResult(
 /**
  * Runs the real OmniRush CLI in a rootless Ubuntu userland on Android.
  *
- * The APK downloads the official PRoot-compatible Ubuntu archive on first use,
- * installs Node.js and the published OmniRush CLI inside it, and then executes
- * real `omnirush` commands. No model or response is implemented in this class.
+ * The APK carries PRoot, Ubuntu, Node.js, and the published OmniRush packages
+ * as build-time assets. On first use it only unpacks those assets into the app
+ * sandbox, then executes real `omnirush` commands. No model or response is
+ * implemented in this class.
  */
 internal class LocalRuntimeManager(private val context: Context) {
     companion object {
-        private const val UBUNTU_AARCH64_URL =
-            "https://github.com/termux/proot-distro/releases/download/v4.18.0/ubuntu-noble-aarch64-pd-v4.18.0.tar.xz"
-        private const val UBUNTU_X86_64_URL =
-            "https://github.com/termux/proot-distro/releases/download/v4.18.0/ubuntu-noble-x86_64-pd-v4.18.0.tar.xz"
         private const val UBUNTU_AARCH64_SHA256 =
             "91acaa786b8e2fbba56a9fd0f8a1188cee482b5c7baeed707b29ddaa9a294daa"
         private const val UBUNTU_X86_64_SHA256 =
             "3a769bce23985effb504140d43b6ddd73dac9e261d1932894afa31de81e45414"
-        private const val PROOT_AARCH64_URL =
-            "https://skirsten.github.io/proot-portable-android-binaries/aarch64/proot"
-        private const val PROOT_X86_64_URL =
-            "https://skirsten.github.io/proot-portable-android-binaries/x86_64/proot"
     }
 
     private val runtimeDir = File(context.filesDir, "linux-runtime")
@@ -75,21 +68,19 @@ internal class LocalRuntimeManager(private val context: Context) {
     fun hasOmniRush(): Boolean = installedMarker.exists()
 
     suspend fun prepare(onProgress: (String, Int) -> Unit) = withContext(Dispatchers.IO) {
-        val (prootUrl, rootfsUrl, rootfsHash) = if (isAarch64()) {
-            Triple(PROOT_AARCH64_URL, UBUNTU_AARCH64_URL, UBUNTU_AARCH64_SHA256)
-        } else {
-            Triple(PROOT_X86_64_URL, UBUNTU_X86_64_URL, UBUNTU_X86_64_SHA256)
-        }
+        val abi = runtimeAbi()
+        val rootfsHash = if (abi == "arm64") UBUNTU_AARCH64_SHA256 else UBUNTU_X86_64_SHA256
 
         if (!prootFile.canExecute()) {
-            onProgress("Downloading PRoot", 0)
-            download(prootUrl, prootFile) { onProgress("Downloading PRoot", it) }
+            onProgress("Unpacking bundled PRoot", 0)
+            copyAsset("runtime/proot-$abi", prootFile)
             prootFile.setExecutable(true, false)
+            onProgress("Unpacking bundled PRoot", 100)
         }
 
         if (!hasUbuntu()) {
-            onProgress("Downloading Ubuntu", 0)
-            download(rootfsUrl, archiveFile) { onProgress("Downloading Ubuntu", it) }
+            onProgress("Unpacking bundled Ubuntu", 0)
+            copyAsset("runtime/ubuntu-rootfs-$abi.tar.xz", archiveFile)
             verifySha256(archiveFile, rootfsHash)
             onProgress("Extracting Ubuntu", 0)
             extractRootfs(archiveFile, rootfsDir) { onProgress("Extracting Ubuntu", it) }
@@ -99,19 +90,46 @@ internal class LocalRuntimeManager(private val context: Context) {
     }
 
     suspend fun installOmniRush(onOutput: (String) -> Unit): LocalCommandResult {
-        val command = """
-            set -e
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update
-            apt-get install -y ca-certificates curl
-            curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-            apt-get install -y nodejs npm
-            npm install -g omnirush@latest
-            mkdir -p /root/.omnirush
-            touch /root/.omnirush/android-installed
-            omnirush --version
-        """.trimIndent()
-        return execute(listOf("/bin/sh", "-lc", command), onOutput)
+        return withContext(Dispatchers.IO) {
+            check(hasUbuntu()) { "Ubuntu runtime is not prepared yet." }
+            val abi = runtimeAbi()
+            onOutput("Unpacking bundled Node.js…")
+            val nodeDir = rootfsDir.resolve("opt/node")
+            nodeDir.deleteRecursively()
+            extractAssetTar(
+                assetName = "runtime/node-$abi.tar.xz",
+                destination = nodeDir,
+                stripSegments = 1,
+                xz = true,
+            )
+
+            onOutput("Unpacking bundled OmniRush CLI…")
+            val omniDir = rootfsDir.resolve("opt/omnirush")
+            omniDir.deleteRecursively()
+            extractAssetTar(
+                assetName = "runtime/omnirush-$abi.tgz",
+                destination = omniDir.resolve("app"),
+                stripSegments = 1,
+                xz = false,
+            )
+            extractAssetTar(
+                assetName = "runtime/omnirush-platform-$abi.tgz",
+                destination = omniDir.resolve("node_modules/@omnirush-ai/cli-linux-$abi"),
+                stripSegments = 1,
+                xz = false,
+            )
+
+            val launcher = rootfsDir.resolve("usr/local/bin/omnirush")
+            launcher.parentFile?.mkdirs()
+            launcher.writeText(
+                "#!/bin/sh\nexec /opt/node/bin/node /opt/omnirush/app/src/bin.js \"\$@\"\n",
+            )
+            launcher.setExecutable(true, false)
+            rootfsDir.resolve("root/.omnirush").mkdirs()
+            installedMarker.writeText("2.2.1\n")
+            val result = execute(listOf("omnirush", "--version"), onOutput)
+            result
+        }
     }
 
     suspend fun login(onOutput: (String) -> Unit): LocalCommandResult {
@@ -195,33 +213,16 @@ internal class LocalRuntimeManager(private val context: Context) {
         rootfsDir.resolve("root/.omnirush").mkdirs()
     }
 
-    private fun isAarch64(): Boolean = Build.SUPPORTED_ABIS.any { it == "arm64-v8a" }
+    private fun runtimeAbi(): String = when {
+        Build.SUPPORTED_ABIS.any { it == "arm64-v8a" } -> "arm64"
+        Build.SUPPORTED_ABIS.any { it == "x86_64" } -> "x64"
+        else -> error("This APK currently supports arm64-v8a and x86_64 devices.")
+    }
 
-    private fun download(url: String, destination: File, onProgress: (Int) -> Unit) {
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 20_000
-            readTimeout = 120_000
-            requestMethod = "GET"
-        }
-        try {
-            check(connection.responseCode in 200..299) { "Download failed with HTTP ${connection.responseCode}." }
-            val total = connection.contentLengthLong
-            var received = 0L
-            destination.parentFile?.mkdirs()
-            connection.inputStream.use { input ->
-                FileOutputStream(destination).use { output ->
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        output.write(buffer, 0, read)
-                        received += read
-                        if (total > 0) onProgress(((received * 100) / total).toInt())
-                    }
-                }
-            }
-        } finally {
-            connection.disconnect()
+    private fun copyAsset(assetName: String, destination: File) {
+        destination.parentFile?.mkdirs()
+        context.assets.open(assetName).use { input ->
+            FileOutputStream(destination).use { output -> input.copyTo(output) }
         }
     }
 
@@ -241,13 +242,46 @@ internal class LocalRuntimeManager(private val context: Context) {
 
     private fun extractRootfs(archive: File, destination: File, onProgress: (Int) -> Unit) {
         destination.mkdirs()
-        TarArchiveInputStream(XZInputStream(BufferedInputStream(FileInputStream(archive)))).use { input ->
-            var entry = input.nextTarEntry
-            var count = 0L
-            while (entry != null) {
-                val target = File(destination, entry.name).canonicalFile
+        TarArchiveInputStream(XZInputStream(BufferedInputStream(FileInputStream(archive)))).use {
+            extractTar(it, destination, stripSegments = 0) { count ->
+                if (count % 500L == 0L) onProgress((count % 10_000L).toInt() / 100)
+            }
+        }
+        onProgress(100)
+    }
+
+    private fun extractAssetTar(
+        assetName: String,
+        destination: File,
+        stripSegments: Int,
+        xz: Boolean,
+    ) {
+        destination.mkdirs()
+        context.assets.open(assetName).use { raw ->
+            val decoded: InputStream = if (xz) XZInputStream(BufferedInputStream(raw)) else GZIPInputStream(BufferedInputStream(raw))
+            decoded.use { input ->
+                TarArchiveInputStream(input).use { archive ->
+                    extractTar(archive, destination, stripSegments)
+                }
+            }
+        }
+    }
+
+    private fun extractTar(
+        input: TarArchiveInputStream,
+        destination: File,
+        stripSegments: Int,
+        onEntry: (Long) -> Unit = {},
+    ) {
+        var entry = input.nextTarEntry
+        var count = 0L
+        while (entry != null) {
+            val parts = entry.name.split('/').filter { it.isNotEmpty() }
+            val relativeName = parts.drop(stripSegments).joinToString(File.separator)
+            if (relativeName.isNotEmpty()) {
+                val target = File(destination, relativeName).canonicalFile
                 check(target.path == destination.canonicalPath || target.path.startsWith(destination.canonicalPath + File.separator)) {
-                    "Unsafe rootfs entry: ${entry.name}"
+                    "Unsafe runtime entry: ${entry.name}"
                 }
                 if (entry.isDirectory) {
                     target.mkdirs()
@@ -267,11 +301,10 @@ internal class LocalRuntimeManager(private val context: Context) {
                     FileOutputStream(target).use { output -> input.copyTo(output) }
                     target.setExecutable((entry.mode and 0x40) != 0, false)
                 }
-                count += 1
-                if (count % 500L == 0L) onProgress((count % 10_000L).toInt() / 100)
-                entry = input.nextTarEntry
             }
+            count += 1
+            onEntry(count)
+            entry = input.nextTarEntry
         }
-        onProgress(100)
     }
 }

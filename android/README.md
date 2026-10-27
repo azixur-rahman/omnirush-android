@@ -22,10 +22,19 @@ The APK is written to
 `android/` and also supports **Run workflow**. Pushing a tag matching
 `android-v*` attaches the APK to a GitHub release.
 
-The default mobile surface runs the real OmniRush CLI locally. On first launch,
-the app downloads Ubuntu rootfs and PRoot, verifies the rootfs checksum, installs Node.js 22 and
-`omnirush@latest` inside Ubuntu, starts `omnirush login` in that runtime, and
-then executes real `omnirush -p` prompts from the native chat UI.
+The default mobile surface runs the real OmniRush CLI locally. The APK build
+embeds PRoot, both architecture-specific Ubuntu rootfs archives, Node.js 22,
+and `omnirush@2.2.1` with its native platform runtime. On first launch the app
+unpacks the matching files into its private sandbox, starts the real
+`omnirush login` flow, and executes real `omnirush -p` prompts from the native
+chat UI.
+
+To prepare the same assets locally before building:
+
+```sh
+python3 scripts/prepare-runtime-assets.py
+gradle --no-daemon :app:assembleDebug
+```
 
 The earlier remote OpenCode API adapter is retained in the source for servers
 that you prefer to run elsewhere. Use HTTPS for production remote servers.

@@ -25,12 +25,13 @@ The requested UI/UX references are installed under `.opencode/skills/`:
 - Animate
 - Mobile Native
 
-The APK now has an on-device mode. On first launch it downloads a PRoot binary
-plus a verified Termux Ubuntu rootfs, installs Node.js 22 and the published
-OmniRush CLI inside that rootfs, opens the real `omnirush login` flow, and runs
-real `omnirush -p` prompts from the glass chat UI. It does not ship a fake
-responder or hardcoded AI answer.
+The APK now has an on-device mode. The release workflow embeds PRoot, a
+verified Termux Ubuntu rootfs, Node.js 22, and the published OmniRush CLI in
+the APK. On first launch those files are unpacked locally, the real
+`omnirush login` flow opens, and real `omnirush -p` prompts run from the glass
+chat UI. It does not ship a fake responder or hardcoded AI answer.
 
 The remote OpenCode-compatible connection remains in the source as a fallback
 adapter. The default experience is the local Linux runtime requested for
-Android; the first install needs a large download and network access.
+Android; the final APK is large because it contains both arm64 and x86_64
+runtime assets.
